@@ -6,8 +6,11 @@
 
 set -euo pipefail
 
-LOG_DIR="logs"
-mkdir -p "$LOG_DIR"
+# -------------------------------
+# Setup Logging
+# -------------------------------
+LOG_DIR="./logs"
+mkdir -p "$LOG_DIR"   # ✅ ensures logs directory exists
 LOG_FILE="$LOG_DIR/deploy_$(date +%Y%m%d_%H%M%S).log"
 
 log() {
@@ -48,7 +51,6 @@ success "Local prerequisites satisfied."
 # -------------------------------
 info "Cloning repository $GIT_URL ..."
 if [ -n "$PAT" ]; then
-  # If PAT provided, inject authentication into the URL safely
   AUTH_GIT_URL="$(echo "$GIT_URL" | sed -E "s#https://#https://${PAT}@#")"
 else
   info "No Personal Access Token provided — cloning as a public repository."
@@ -102,11 +104,11 @@ scp -i "$SSH_KEY" -r . "$SSH_USER@$SSH_HOST:$REMOTE_DIR"
 ssh -i "$SSH_KEY" "$SSH_USER@$SSH_HOST" <<EOF
 cd $REMOTE_DIR
 if [ -f docker-compose.yml ]; then
-  sudo docker-compose down || true
-  sudo docker-compose up -d --build
+  sudo docker compose down || true
+  sudo docker compose up -d --build
 else
-  sudo docker stop app_container || true
-  sudo docker rm app_container || true
+  sudo docker stop app_container 2>/dev/null || true
+  sudo docker rm app_container 2>/dev/null || true
   sudo docker build -t app_image .
   sudo docker run -d -p $APP_PORT:$APP_PORT --name app_container app_image
 fi
