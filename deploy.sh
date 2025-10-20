@@ -107,11 +107,24 @@ check_local_prereqs() {
 ####################################################################
 # Clone or update repo locally
 ####################################################################
+
+####################################################################
+# Clone or update repo locally
+####################################################################
 prepare_local_repo() {
-  # Use token for authentication if HTTPS remote
-  AUTH_GIT_URL="${GIT_URL}"
-  if printf '%s' "${GIT_URL}" | grep -qE '^https?://'; then
-    AUTH_GIT_URL="$(printf '%s' "${GIT_URL}" | sed -E "s#https?://#https://${PAT}@#")"
+  info "Preparing local repository..."
+
+  # If PAT is empty, skip authentication and clone publicly
+  if [ -z "${PAT}" ]; then
+    info "No Personal Access Token provided — cloning as a public repository"
+    AUTH_GIT_URL="${GIT_URL}"
+  else
+    # Use token for authentication if HTTPS remote
+    if printf '%s' "${GIT_URL}" | grep -qE '^https?://'; then
+      AUTH_GIT_URL="$(printf '%s' "${GIT_URL}" | sed -E "s#https?://#https://${PAT}@#")"
+    else
+      AUTH_GIT_URL="${GIT_URL}"
+    fi
   fi
 
   if [ -d "${REPO_NAME}/.git" ]; then
@@ -120,7 +133,7 @@ prepare_local_repo() {
     (cd "${REPO_NAME}" && git checkout "${BRANCH}") >>"${LOG_FILE}" 2>&1 || die "Failed to checkout ${BRANCH}"
     (cd "${REPO_NAME}" && git pull origin "${BRANCH}") >>"${LOG_FILE}" 2>&1 || die "Failed to pull latest changes"
   else
-    info "Cloning repository ${GIT_URL} ..."
+    info "Cloning repository ${AUTH_GIT_URL} ..."
     git clone --branch "${BRANCH}" "${AUTH_GIT_URL}" "${REPO_NAME}" >>"${LOG_FILE}" 2>&1 || die "Git clone failed"
   fi
 
@@ -131,6 +144,7 @@ prepare_local_repo() {
     die "No Dockerfile or docker-compose.yml found in repo root"
   fi
 }
+
 
 ####################################################################
 # Remote helpers (execute commands via SSH)
