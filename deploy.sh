@@ -9,10 +9,12 @@ set -euo pipefail
 # ============================================
 # 🧾 Setup Logging (Local + Remote)
 # ============================================
-LOG_DIR="./logs"
-mkdir -p "$LOG_DIR"  # ✅ Ensure logs directory exists before writing
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="$LOG_DIR/deploy_${TIMESTAMP}.log"
+
 
 # --- Logging Helpers ---
 log() {
