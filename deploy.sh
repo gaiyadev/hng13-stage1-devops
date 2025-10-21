@@ -213,12 +213,10 @@ server {
 }
 EOF
 
-# Enable site
+# Enable site, test config and reload Nginx
 ln -sf /etc/nginx/sites-available/${REPO_NAME}.conf /etc/nginx/sites-enabled/${REPO_NAME}.conf
-
-# Test config and reload Nginx
 nginx -t && systemctl reload nginx"
-  
+
   succ "Nginx configured and reloaded successfully"
 }
 
