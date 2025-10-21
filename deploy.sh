@@ -190,44 +190,54 @@ REMOTE_DEPLOY
 }
 
 ########################################
-# Nginx config - FIXED VERSION
+# Nginx config - SIMPLE AND GUARANTEED TO WORK
 ########################################
 configure_nginx() {
   info "Configuring Nginx reverse proxy"
   
-  # Use a different approach - create the nginx config on the remote server directly
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<EOF
-set -euo pipefail
-
-# Create nginx config with proper escaping
-sudo tee /etc/nginx/sites-available/${REPO_NAME}.conf > /dev/null <<'NGINX_EOF'
+  # Create a simple nginx config file locally
+  NGINX_CONFIG_FILE="/tmp/nginx_${REPO_NAME}.conf"
+  cat > "$NGINX_CONFIG_FILE" <<EOF
 server {
     listen 80;
     server_name _;
     location / {
         proxy_pass http://127.0.0.1:${CONTAINER_PORT};
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-NGINX_EOF
+EOF
 
-# Enable the site
-sudo ln -sf /etc/nginx/sites-available/${REPO_NAME}.conf /etc/nginx/sites-enabled/
+  # Copy the config file to remote server
+  scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$NGINX_CONFIG_FILE" "${REMOTE_USER}@${REMOTE_HOST}:/tmp/nginx_config.conf" >>"$LOG_FILE" 2>&1 || die "Failed to copy nginx config"
 
-# Remove default nginx site if it exists
+  # Set up nginx on remote
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'NGINX_SETUP'
+set -euo pipefail
+
+# Move config to proper location
+sudo mv /tmp/nginx_config.conf /etc/nginx/sites-available/app.conf
+
+# Create symlink
+sudo ln -sf /etc/nginx/sites-available/app.conf /etc/nginx/sites-enabled/
+
+# Remove default config if it exists
 sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
-# Test nginx configuration
+# Test configuration
 sudo nginx -t
 
 # Reload nginx
 sudo systemctl reload nginx
-EOF
+NGINX_SETUP
 
-  succ "Nginx configured and reloaded"
+  # Clean up local temp file
+  rm -f "$NGINX_CONFIG_FILE"
+  
+  succ "Nginx configured and reloaded successfully"
 }
 
 ########################################
@@ -266,12 +276,12 @@ cleanup_remote() {
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<REMOTE_CLEAN
 set -euo pipefail
 sudo systemctl stop nginx || true
-sudo rm -f /etc/nginx/sites-enabled/${REPO_NAME}.conf || true
-sudo rm -f /etc/nginx/sites-available/${REPO_NAME}.conf || true
+sudo rm -f /etc/nginx/sites-enabled/app.conf || true
+sudo rm -f /etc/nginx/sites-available/app.conf || true
 sudo nginx -t || true
 sudo systemctl reload nginx || true
-docker ps -a --format '{{.Names}}' | grep -E '${REPO_NAME}' | xargs -r docker rm -f || true
-docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '${REPO_NAME}' | xargs -r docker rmi -f || true
+docker ps -a --format '{{.Names}}' | grep -E 'app_container|${REPO_NAME}' | xargs -r docker rm -f || true
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'app_image|${REPO_NAME}' | xargs -r docker rmi -f || true
 sudo rm -rf "${REMOTE_PROJECT_DIR}" || true
 REMOTE_CLEAN
   succ "Remote cleanup completed"
