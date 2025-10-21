@@ -191,17 +191,15 @@ REMOTE_DEPLOY
 }
 
 ########################################
-# Nginx config - FIXED VERSION
+# Nginx config
+########################################
+########################################
+# Nginx config
 ########################################
 configure_nginx() {
   info "Configuring Nginx reverse proxy"
-  
-  # Create the nginx config file directly on the remote server
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<NGINX_SCRIPT
-set -euo pipefail
 
-# Create nginx config with proper escaping
-sudo tee /etc/nginx/sites-available/${REPO_NAME}.conf > /dev/null <<'NGINX_CONF'
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" sudo bash -c "cat > /etc/nginx/sites-available/${REPO_NAME}.conf <<'EOF'
 server {
     listen 80;
     server_name _;
@@ -213,19 +211,15 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-NGINX_CONF
+EOF
 
-# Enable the site
-sudo ln -sf /etc/nginx/sites-available/${REPO_NAME}.conf /etc/nginx/sites-enabled/${REPO_NAME}.conf
+# Enable site
+ln -sf /etc/nginx/sites-available/${REPO_NAME}.conf /etc/nginx/sites-enabled/${REPO_NAME}.conf
 
-# Remove default nginx site if it exists
-sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-
-# Test and reload nginx
-sudo nginx -t && sudo systemctl reload nginx
-NGINX_SCRIPT
-
-  succ "Nginx configured and reloaded"
+# Test config and reload Nginx
+nginx -t && systemctl reload nginx"
+  
+  succ "Nginx configured and reloaded successfully"
 }
 
 ########################################
@@ -233,20 +227,12 @@ NGINX_SCRIPT
 ########################################
 validate_deployment() {
   info "Validating deployment"
-  sleep 5  # Give services time to start
-  
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "sudo systemctl is-active docker" >/dev/null 2>&1 || die "Docker is not active on remote"
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "docker ps --format '{{.Names}} {{.Status}}'" >>"$LOG_FILE" 2>&1 || die "Failed to list containers"
-  
-  # Check if nginx is running
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "sudo systemctl is-active nginx" >/dev/null 2>&1 || die "Nginx is not active on remote"
-  
   # remote loopback check
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "curl -sfS --connect-timeout 10 http://127.0.0.1:${CONTAINER_PORT} >/dev/null 2>&1 && echo 'APP_HEALTHY' || echo 'APP_UNHEALTHY'" >>"$LOG_FILE" 2>&1
-  
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "curl -sfS http://127.0.0.1:${CONTAINER_PORT} || echo 'REMOTE_CURL_FAILED'" >>"$LOG_FILE" 2>&1 || info "Remote curl may have failed"
   # public reachability
-  info "Testing public reachability at http://${REMOTE_HOST}"
-  if curl -sfS --connect-timeout 10 "http://${REMOTE_HOST}" >/dev/null 2>&1; then
+  if curl -sfS "http://${REMOTE_HOST}" >/dev/null 2>&1; then
     succ "Application reachable via http://${REMOTE_HOST}"
   else
     info "Application not reachable from this network (http://${REMOTE_HOST}) — check firewall/security groups"
@@ -296,7 +282,6 @@ main() {
   validate_deployment
 
   succ "Deployment completed. Local log: $LOG_FILE"
-  info "Your application should be accessible at: http://${REMOTE_HOST}"
 }
 
 main "$@"
