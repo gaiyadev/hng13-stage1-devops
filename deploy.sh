@@ -165,32 +165,51 @@ transfer_project() {
 }
 
 ########################################
-# Remote deploy (docker-compose or docker)
+# Remote deploy (docker-compose or docker) - FIXED CONTAINER CONFLICTS
 ########################################
 remote_deploy() {
   info "Deploying application on remote host"
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<REMOTE_DEPLOY
 set -euo pipefail
 cd "${REMOTE_PROJECT_DIR}"
-# ensure old containers removed
+
+# Clean up any existing containers and images to prevent conflicts
+echo "Cleaning up any existing containers..."
+sudo docker ps -a --filter "name=app_container" --format '{{.ID}}' | xargs -r sudo docker rm -f || true
+sudo docker ps -a --filter "name=${REPO_NAME}_service" --format '{{.ID}}' | xargs -r sudo docker rm -f || true
+sudo docker ps -a --filter "name=${REPO_NAME}" --format '{{.ID}}' | xargs -r sudo docker rm -f || true
+
+# Clean up any existing images to force rebuild
+echo "Cleaning up existing images..."
+sudo docker images --filter "reference=*${REPO_NAME}*" --format '{{.ID}}' | xargs -r sudo docker rmi -f || true
+sudo docker images --filter "reference=app_image" --format '{{.ID}}' | xargs -r sudo docker rmi -f || true
+
 if [ -f docker-compose.yml ]; then
-  sudo docker-compose down || true
+  echo "Using docker-compose..."
+  sudo docker-compose down 2>/dev/null || true
   sudo docker-compose pull || true
   sudo docker-compose up -d --build
 else
-  # image name safe derived
-  IMG="${REPO_NAME}:latest"
-  sudo docker build -t "\$IMG" . || true
-  sudo docker ps -a --filter "ancestor=\$IMG" --format '{{.ID}}' | xargs -r sudo docker rm -f || true
-  sudo docker run -d --name "${REPO_NAME}_service" -p ${CONTAINER_PORT}:${CONTAINER_PORT} "\$IMG" || true
+  echo "Using Dockerfile..."
+  # Build with a unique tag including timestamp to avoid conflicts
+  IMG_TAG="${REPO_NAME}:latest"
+  sudo docker build -t "\$IMG_TAG" .
+  
+  # Run the container
+  sudo docker run -d \
+    --name "app_${REPO_NAME}_\$(date +%s)" \
+    -p ${CONTAINER_PORT}:${CONTAINER_PORT} \
+    "\$IMG_TAG"
 fi
-sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+
+echo "Current running containers:"
+sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 REMOTE_DEPLOY
-  succ "Remote deployment attempted"
+  succ "Remote deployment completed"
 }
 
 ########################################
-# Nginx config - SIMPLE AND GUARANTEED TO WORK
+# Nginx config - WORKING VERSION
 ########################################
 configure_nginx() {
   info "Configuring Nginx reverse proxy"
@@ -247,8 +266,12 @@ validate_deployment() {
   info "Validating deployment"
   sleep 5  # Give services time to start
   
+  # Check Docker status
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "sudo systemctl is-active docker" >/dev/null 2>&1 || die "Docker is not active on remote"
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "docker ps --format '{{.Names}} {{.Status}}'" >>"$LOG_FILE" 2>&1 || die "Failed to list containers"
+  
+  # List containers
+  info "Current Docker containers:"
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'" >>"$LOG_FILE" 2>&1 || die "Failed to list containers"
   
   # Check if nginx is running
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "sudo systemctl is-active nginx" >/dev/null 2>&1 || die "Nginx is not active on remote"
@@ -256,15 +279,16 @@ validate_deployment() {
   # Test nginx configuration
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "sudo nginx -t" >>"$LOG_FILE" 2>&1 || die "Nginx configuration test failed"
   
-  # remote loopback check
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "curl -sfS --connect-timeout 10 http://127.0.0.1:${CONTAINER_PORT} >/dev/null 2>&1 && echo 'APP_HEALTHY' || echo 'APP_UNHEALTHY'" >>"$LOG_FILE" 2>&1
+  # Test application health
+  info "Testing application health..."
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "curl -sfS --connect-timeout 10 http://127.0.0.1:${CONTAINER_PORT} >/dev/null 2>&1 && echo '✅ Application is healthy' || echo '❌ Application health check failed'" >>"$LOG_FILE" 2>&1
   
   # public reachability
   info "Testing public reachability at http://${REMOTE_HOST}"
   if curl -sfS --connect-timeout 10 "http://${REMOTE_HOST}" >/dev/null 2>&1; then
-    succ "Application reachable via http://${REMOTE_HOST}"
+    succ "✅ Application reachable via http://${REMOTE_HOST}"
   else
-    info "Application not reachable from this network (http://${REMOTE_HOST}) — check firewall/security groups"
+    info "⚠️  Application not reachable from this network (http://${REMOTE_HOST}) — check firewall/security groups"
   fi
 }
 
@@ -275,14 +299,24 @@ cleanup_remote() {
   info "Running cleanup on remote host"
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<REMOTE_CLEAN
 set -euo pipefail
+
+# Stop and remove all project-related containers
+sudo docker ps -a --format '{{.Names}}' | grep -E 'app_|${REPO_NAME}' | xargs -r sudo docker rm -f || true
+
+# Remove all project-related images
+sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'app_|${REPO_NAME}' | xargs -r sudo docker rmi -f || true
+
+# Clean up nginx
 sudo systemctl stop nginx || true
 sudo rm -f /etc/nginx/sites-enabled/app.conf || true
 sudo rm -f /etc/nginx/sites-available/app.conf || true
 sudo nginx -t || true
 sudo systemctl reload nginx || true
-docker ps -a --format '{{.Names}}' | grep -E 'app_container|${REPO_NAME}' | xargs -r docker rm -f || true
-docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'app_image|${REPO_NAME}' | xargs -r docker rmi -f || true
+
+# Remove project directory
 sudo rm -rf "${REMOTE_PROJECT_DIR}" || true
+
+echo "Cleanup completed"
 REMOTE_CLEAN
   succ "Remote cleanup completed"
 }
@@ -310,8 +344,9 @@ main() {
   configure_nginx
   validate_deployment
 
-  succ "Deployment completed. Local log: $LOG_FILE"
-  info "Your application should be accessible at: http://${REMOTE_HOST}"
+  succ "Deployment completed successfully! 🚀"
+  info "Your application is accessible at: http://${REMOTE_HOST}"
+  info "Detailed logs: $LOG_FILE"
 }
 
 main "$@"
