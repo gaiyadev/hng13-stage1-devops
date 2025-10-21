@@ -198,8 +198,7 @@ REMOTE_DEPLOY
 ########################################
 configure_nginx() {
   info "Configuring Nginx reverse proxy"
-
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" sudo bash -c "cat > /etc/nginx/sites-available/${REPO_NAME}.conf <<'EOF'
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" sudo bash -c "cat > /etc/nginx/sites-available/${REPO_NAME}.conf <<EOF
 server {
     listen 80;
     server_name _;
@@ -213,9 +212,9 @@ server {
 }
 EOF
 
-# Enable site, test config and reload Nginx
 ln -sf /etc/nginx/sites-available/${REPO_NAME}.conf /etc/nginx/sites-enabled/${REPO_NAME}.conf
 nginx -t && systemctl reload nginx"
+
 
   succ "Nginx configured and reloaded successfully"
 }
