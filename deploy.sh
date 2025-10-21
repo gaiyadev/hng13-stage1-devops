@@ -115,39 +115,151 @@ check_ssh_connectivity() {
 }
 
 ########################################
-# Prepare remote environment (install docker/nginx)
+# Install Docker if not exists
+########################################
+install_docker_if_needed() {
+  info "Checking Docker installation..."
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'DOCKER_CHECK'
+set -euo pipefail
+
+if command -v docker >/dev/null 2>&1; then
+    echo "Docker is already installed: $(docker --version)"
+    exit 0
+fi
+
+echo "Installing Docker..."
+LOG=/tmp/docker_install.log
+
+# Install using official Docker script
+curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh >> "$LOG" 2>&1
+
+# Start and enable Docker
+sudo systemctl enable --now docker >> "$LOG" 2>&1
+sudo usermod -aG docker "$USER" >> "$LOG" 2>&1 || true
+
+echo "Docker installed: $(docker --version)"
+DOCKER_CHECK
+  succ "Docker installation verified"
+}
+
+########################################
+# Install Docker Compose if not exists
+########################################
+install_docker_compose_if_needed() {
+  info "Checking Docker Compose installation..."
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'COMPOSE_CHECK'
+set -euo pipefail
+
+if command -v docker-compose >/dev/null 2>&1; then
+    echo "Docker Compose is already installed: $(docker-compose --version)"
+    exit 0
+fi
+
+echo "Installing Docker Compose..."
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Create symlink for broader compatibility
+sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose 2>/dev/null || true
+
+echo "Docker Compose installed: $(docker-compose --version)"
+COMPOSE_CHECK
+  succ "Docker Compose installation verified"
+}
+
+########################################
+# Install Nginx if not exists
+########################################
+install_nginx_if_needed() {
+  info "Checking Nginx installation..."
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'NGINX_CHECK'
+set -euo pipefail
+
+if command -v nginx >/dev/null 2>&1; then
+    echo "Nginx is already installed: $(nginx -v 2>&1)"
+    exit 0
+fi
+
+echo "Installing Nginx..."
+LOG=/tmp/nginx_install.log
+
+# Detect package manager
+if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -y >> "$LOG" 2>&1
+    sudo apt-get install -y nginx >> "$LOG" 2>&1
+elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y epel-release >> "$LOG" 2>&1
+    sudo yum install -y nginx >> "$LOG" 2>&1
+else
+    echo "Unsupported package manager"
+    exit 1
+fi
+
+# Start and enable Nginx
+sudo systemctl enable --now nginx >> "$LOG" 2>&1
+
+echo "Nginx installed: $(nginx -v 2>&1)"
+NGINX_CHECK
+  succ "Nginx installation verified"
+}
+
+########################################
+# Prepare SSL certificates (placeholder for Certbot)
+########################################
+setup_ssl_placeholder() {
+  info "Setting up SSL readiness..."
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'SSL_SETUP'
+set -euo pipefail
+
+# Create SSL directory structure
+sudo mkdir -p /etc/nginx/ssl
+
+# Create placeholder SSL configuration comment
+if [ ! -f /etc/nginx/ssl/README ]; then
+sudo tee /etc/nginx/ssl/README > /dev/null <<'EOF'
+# SSL Certificate Directory
+# 
+# To enable SSL:
+# 1. Install Certbot: sudo apt-get install certbot python3-certbot-nginx
+# 2. Get certificate: sudo certbot --nginx -d yourdomain.com
+# 3. Certbot will automatically update Nginx configuration
+#
+# For self-signed certificates (testing):
+# sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#   -keyout /etc/nginx/ssl/selfsigned.key \
+#   -out /etc/nginx/ssl/selfsigned.crt
+EOF
+fi
+
+echo "SSL directory structure prepared"
+echo "To enable SSL later, run: sudo certbot --nginx -d your-domain.com"
+SSL_SETUP
+  succ "SSL readiness configured"
+}
+
+########################################
+# Prepare remote environment (SMART INSTALL)
 ########################################
 remote_prepare() {
-  info "Preparing remote environment"
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'REMOTE'
+  info "Preparing remote environment (smart install)"
+  
+  install_docker_if_needed
+  install_docker_compose_if_needed
+  install_nginx_if_needed
+  setup_ssl_placeholder
+  
+  # Verify all services
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash <<'VERIFY'
 set -euo pipefail
-LOG=/tmp/remote_setup.log
-echo "remote prepare start: $(date)" > "$LOG"
-if command -v apt-get >/dev/null 2>&1; then
-  sudo apt-get update -y >> "$LOG" 2>&1
-  sudo apt-get install -y ca-certificates curl gnupg lsb-release >> "$LOG" 2>&1 || true
-  if ! command -v docker >/dev/null 2>&1; then
-    curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh >> "$LOG" 2>&1 || true
-  fi
-  sudo apt-get install -y docker-compose nginx >> "$LOG" 2>&1 || true
-elif command -v yum >/dev/null 2>&1; then
-  sudo yum install -y yum-utils device-mapper-persistent-data lvm2 >> "$LOG" 2>&1 || true
-  if ! command -v docker >/dev/null 2>&1; then
-    curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh >> "$LOG" 2>&1 || true
-  fi
-  sudo yum install -y docker-compose nginx >> "$LOG" 2>&1 || true
-else
-  echo "Unsupported package manager" >> "$LOG"
-  exit 1
-fi
-sudo systemctl enable --now docker || true
-sudo systemctl enable --now nginx || true
-echo "Docker: $(docker --version 2>/dev/null || echo 'n/a')" >> "$LOG"
-echo "Docker Compose: $(docker-compose --version 2>/dev/null || echo 'n/a')" >> "$LOG"
-echo "Nginx: $(nginx -v 2>/dev/null || echo 'n/a')" >> "$LOG"
-cat "$LOG"
-REMOTE
-  succ "Remote environment preparation attempted (see remote logs)"
+echo "=== Service Verification ==="
+echo "Docker: $(docker --version 2>/dev/null || echo 'NOT_FOUND')"
+echo "Docker Compose: $(docker-compose --version 2>/dev/null || echo 'NOT_FOUND')"
+echo "Nginx: $(nginx -v 2>&1 2>/dev/null || echo 'NOT_FOUND')"
+echo "Docker Service: $(systemctl is-active docker 2>/dev/null || echo 'INACTIVE')"
+echo "Nginx Service: $(systemctl is-active nginx 2>/dev/null || echo 'INACTIVE')"
+VERIFY
+
+  succ "Remote environment prepared successfully"
 }
 
 ########################################
@@ -195,9 +307,10 @@ else
   IMG_TAG="${REPO_NAME}:latest"
   sudo docker build -t "\$IMG_TAG" .
   
-  # Run the container
+  # Run the container with restart policy
   sudo docker run -d \
     --name "app_${REPO_NAME}_\$(date +%s)" \
+    --restart unless-stopped \
     -p ${CONTAINER_PORT}:${CONTAINER_PORT} \
     "\$IMG_TAG"
 fi
@@ -209,24 +322,49 @@ REMOTE_DEPLOY
 }
 
 ########################################
-# Nginx config
+# Nginx config with SSL readiness
 ########################################
 configure_nginx() {
-  info "Configuring Nginx reverse proxy"
+  info "Configuring Nginx reverse proxy with SSL readiness"
   
-  # Create a simple nginx config file locally
+  # Create nginx config with SSL placeholder
   NGINX_CONFIG_FILE="/tmp/nginx_${REPO_NAME}.conf"
   cat > "$NGINX_CONFIG_FILE" <<EOF
+# HTTP to HTTPS redirect (commented until SSL is configured)
+# server {
+#     listen 80;
+#     server_name _;
+#     return 301 https://\$server_name\$request_uri;
+# }
+
 server {
     listen 80;
+    # listen 443 ssl http2;  # Uncomment when SSL is configured
     server_name _;
+    
+    # SSL placeholder (uncomment when certificates are available)
+    # ssl_certificate /etc/nginx/ssl/selfsigned.crt;
+    # ssl_certificate_key /etc/nginx/ssl/selfsigned.key;
+    # ssl_protocols TLSv1.2 TLSv1.3;
+    # ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512;
+    
     location / {
         proxy_pass http://127.0.0.1:${CONTAINER_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
+    
+    # Security headers
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
 }
 EOF
 
@@ -256,7 +394,7 @@ NGINX_SETUP
   # Clean up local temp file
   rm -f "$NGINX_CONFIG_FILE"
   
-  succ "Nginx configured and reloaded successfully"
+  succ "Nginx configured with SSL readiness"
 }
 
 ########################################
@@ -306,12 +444,10 @@ sudo docker ps -a --format '{{.Names}}' | grep -E 'app_|${REPO_NAME}' | xargs -r
 # Remove all project-related images
 sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'app_|${REPO_NAME}' | xargs -r sudo docker rmi -f || true
 
-# Clean up nginx
-sudo systemctl stop nginx || true
+# Clean up nginx (only our config, not nginx itself)
 sudo rm -f /etc/nginx/sites-enabled/app.conf || true
 sudo rm -f /etc/nginx/sites-available/app.conf || true
-sudo nginx -t || true
-sudo systemctl reload nginx || true
+sudo nginx -t && sudo systemctl reload nginx || true
 
 # Remove project directory
 sudo rm -rf "${REMOTE_PROJECT_DIR}" || true
@@ -346,6 +482,7 @@ main() {
 
   succ "Deployment completed successfully! 🚀"
   info "Your application is accessible at: http://${REMOTE_HOST}"
+  info "SSL is ready for configuration - see /etc/nginx/ssl/README on the server"
   info "Detailed logs: $LOG_FILE"
 }
 
