@@ -165,7 +165,7 @@ transfer_project() {
 }
 
 ########################################
-# Remote deploy (docker-compose or docker) - FIXED CONTAINER CONFLICTS
+# Remote deploy (docker-compose or docker)
 ########################################
 remote_deploy() {
   info "Deploying application on remote host"
@@ -209,7 +209,7 @@ REMOTE_DEPLOY
 }
 
 ########################################
-# Nginx config - WORKING VERSION
+# Nginx config
 ########################################
 configure_nginx() {
   info "Configuring Nginx reverse proxy"
